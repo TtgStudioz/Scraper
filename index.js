@@ -7,6 +7,25 @@ const PORT = 4000;
 
 app.use(cors());
 
+// ✅ Simple in-memory cache
+const cache = new Map();
+const CACHE_TIME = 60 * 1000; // 1 minute
+
+let browser;
+
+// ✅ Launch browser ONCE
+(async () => {
+    browser = await puppeteer.launch({
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage'
+        ]
+    });
+    console.log('✅ Puppeteer browser launched');
+})();
+
+// ✅ Scrape endpoint
 app.get('/scrape', async (req, res) => {
     const { url, selector } = req.query;
 
@@ -14,39 +33,67 @@ app.get('/scrape', async (req, res) => {
         return res.status(400).send({ error: 'URL is required' });
     }
 
+    const cacheKey = url + (selector || '');
+
+    // ⚡ Return cached result if available
+    if (cache.has(cacheKey)) {
+        const { data, time } = cache.get(cacheKey);
+        if (Date.now() - time < CACHE_TIME) {
+            return res.send(data);
+        }
+    }
+
+    let page;
+
     try {
-        const browser = await puppeteer.launch({
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        page = await browser.newPage();
+
+        // ⚡ Block heavy resources
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+            const type = req.resourceType();
+            if (['image', 'stylesheet', 'font', 'media'].includes(type)) {
+                req.abort();
+            } else {
+                req.continue();
+            }
         });
 
-        const page = await browser.newPage();
-        await page.goto(url, { waitUntil: 'networkidle2' });
+        // ⚡ Faster load
+        await page.goto(url, {
+            waitUntil: 'domcontentloaded',
+            timeout: 15000
+        });
 
         const html = await page.evaluate((sel) => {
             if (sel) {
                 const el = document.querySelector(sel);
-                return el ? el.innerHTML : null; // ✅ HTML instead of text
+                return el ? el.innerHTML : null;
             }
             return document.body.innerHTML;
         }, selector);
 
-        await browser.close();
+        const response = {
+            contents: html ? [html] : []
+        };
 
-        if (!html) {
-            return res.status(404).send({ contents: [] });
-        }
-
-        // ✅ Match your OLD API format EXACTLY
-        res.send({
-            contents: [html]
+        // ✅ Save to cache
+        cache.set(cacheKey, {
+            data: response,
+            time: Date.now()
         });
 
+        res.send(response);
+
     } catch (e) {
-        console.error(e);
+        console.error('❌ Error:', e.message);
         res.status(500).send({ error: e.message });
+    } finally {
+        if (page) await page.close();
     }
 });
 
+// ✅ Start server
 app.listen(PORT, () => {
-    console.log(`Scraper API running on http://localhost:${PORT}`);
+    console.log(`🚀 Scraper API running on http://localhost:${PORT}`);
 });
