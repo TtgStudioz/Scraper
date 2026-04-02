@@ -1,33 +1,48 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
-const cors = require('cors'); // 1. Import cors
+const cors = require('cors');
+
 const app = express();
 const PORT = 4000;
 
-app.use(cors()); // 2. Enable CORS for all routes
-app.get('/scrape', async (req, res) => {
-    const { url, selector } = req.query; // Now accepting a 'selector' parameter
+app.use(cors());
 
-    if (!url) return res.status(400).send({ error: 'URL is required' });
+app.get('/scrape', async (req, res) => {
+    const { url, selector } = req.query;
+
+    if (!url) {
+        return res.status(400).send({ error: 'URL is required' });
+    }
 
     try {
-        const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+        const browser = await puppeteer.launch({
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        });
+
         const page = await browser.newPage();
         await page.goto(url, { waitUntil: 'networkidle2' });
 
-        // If a selector is provided, find that specific element. 
-        // Otherwise, get the whole body.
-        const data = await page.evaluate((sel) => {
+        const html = await page.evaluate((sel) => {
             if (sel) {
                 const el = document.querySelector(sel);
-                return el ? el.innerText : "Selector not found";
+                return el ? el.innerHTML : null; // ✅ HTML instead of text
             }
-            return document.body.innerText;
+            return document.body.innerHTML;
         }, selector);
 
         await browser.close();
-        res.send({ data });
+
+        if (!html) {
+            return res.status(404).send({ contents: [] });
+        }
+
+        // ✅ Match your OLD API format EXACTLY
+        res.send({
+            contents: [html]
+        });
+
     } catch (e) {
+        console.error(e);
         res.status(500).send({ error: e.message });
     }
 });
